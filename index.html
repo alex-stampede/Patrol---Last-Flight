@@ -1,0 +1,350 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"><title>PATROL — Last Light</title><style>@import url('https://fonts.googleapis.com/css2?family=Space+Mono&family=Silkscreen&display=swap');*{box-sizing:border-box}body{margin:0;background:#171c30;color:#ffdfad;overflow:hidden;font-family:'Space Mono',monospace}canvas{position:absolute;width:100%;height:100%;image-rendering:auto}#ui{pointer-events:none}header{position:absolute;top:24px;left:28px;pointer-events:none}h1{font:32px Silkscreen,monospace;letter-spacing:5px;margin:0}small{font-size:11px;letter-spacing:3px}#strip{position:absolute;bottom:20px;width:100%;text-align:center;font-size:12px;text-shadow:1px 2px #171c30;padding:0 15px}button{background:#20283ed9;border:1px solid #aa936b;color:#ffe1af;padding:10px 13px;font:12px monospace;cursor:pointer}#sound{position:absolute;right:24px;top:24px}#cover{position:absolute;inset:0;display:grid;place-content:center;text-align:center;background:#171c3080}#cover h1{font-size:clamp(42px,8vw,96px)}#cover p{font-size:13px;line-height:2}#start{margin:20px auto;min-width:180px}progress{accent-color:#efb16d;width:220px;margin:auto}#touch{display:none;position:absolute;right:15px;bottom:65px;gap:8px}@media(pointer:coarse){#touch{display:flex}#strip{font-size:10px}header{top:15px;left:15px}header h1{font-size:22px}}</style><canvas id="world"></canvas><canvas id="ui"></canvas><header><h1>PATROL</h1><small>LAKE COUNTRY / LAST LIGHT</small></header><button id="sound">SOUND OFF</button><div id="strip">MOUSE steer · CLICK roll · HOLD boost · F / RIGHT CLICK missile · C flares · HOLD G Vulcan · SPACE view <span id="count"></span></div><div id="touch"><button id="view">VIEW</button><button id="roll">ROLL</button><button id="boost">BOOST</button><button id="fire">FIRE</button><button id="gun">VULCAN</button><button id="flares">FLARES</button></div><div id="cover"><h1>PATROL</h1><p>F-22 Raptor / Last-light patrol.<br>No destination. Just the last light.</p><progress id="progress" max="100" value="0"></progress><button id="start" disabled>BUILDING LAKE COUNTRY</button><small>MOUSE OR TOUCH TO FLY</small></div><script>
+'use strict';
+function showStartupError(message){const button=document.getElementById('start');button.disabled=true;button.textContent='STARTUP ERROR';const detail=document.querySelector('#cover p');detail.textContent=String(message);detail.style.maxWidth='650px';detail.style.overflowWrap='anywhere';document.getElementById('cover').style.display='grid';}
+addEventListener('error',e=>showStartupError(e.message||'Could not start the game.'));
+addEventListener('unhandledrejection',e=>showStartupError(e.reason?.message||e.reason));
+
+const $=id=>document.getElementById(id), gl=$('world').getContext('webgl2',{antialias:false,alpha:false}),c=$('ui'),ctx=c.getContext('2d');
+if(!gl){$('start').textContent='WEBGL2 REQUIRED';throw Error('WebGL2 unavailable')}
+const vs=`#version 300 es
+in vec2 p;out vec2 uv;void main(){uv=p;gl_Position=vec4(p,0,1);}`;
+const fs=`#version 300 es
+precision highp float;in vec2 uv;out vec4 color;uniform sampler2D terrain;uniform vec3 eye,forward,right,up;uniform float aspect,time;uniform vec3 jet;float H(vec2 p){vec2 q=fract(p/8192.)*512.-.5;ivec2 a=ivec2(floor(q));vec2 f=fract(q);float h00=texelFetch(terrain,(a+512)%512,0).r;float h10=texelFetch(terrain,(a+ivec2(1,0)+512)%512,0).r;float h01=texelFetch(terrain,(a+ivec2(0,1)+512)%512,0).r;float h11=texelFetch(terrain,(a+ivec2(1,1)+512)%512,0).r;return mix(mix(h00,h10,f.x),mix(h01,h11,f.x),f.y)*1100.-230.;}float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}vec3 sun=normalize(vec3(.6,.18,.8));vec3 sky(vec3 d){float s=pow(max(dot(d,sun),0.),6.);vec3 col=mix(vec3(.68,.53,.64),vec3(1.,.86,.67),pow(1.-max(d.y,0.),3.));col=mix(col,vec3(1.,.78,.47),s*.65);if(dot(d,sun)>.998)col=vec3(1.,.9,.61);float streak=sin(d.x*17.+d.z*21.+d.y*62.+sin(d.x*11.)*2.);float field=sin(d.x*41.+d.z*27.-d.y*6.);if(d.y>.06&&d.y<.6&&streak+field*.42>1.06)col=mix(col,vec3(1.,.86,.68),.42);return col;}void main(){vec3 d=normalize(forward+right*uv.x*aspect*.72+up*uv.y*.72);vec3 col=sky(d);float t=4.;bool hit=false;vec3 p;for(int i=0;i<160;i++){p=eye+d*t;float h=max(0.,H(p.xz));float gap=p.y-h;if(gap<max(1.,t*.0015)){hit=true;break;}t+=max(3.,min(gap*.46,80.+t*.035));if(t>11000.)break;}if(hit){float h=H(p.xz);vec3 n=normalize(vec3(H(p.xz-vec2(8,0))-H(p.xz+vec2(8,0)),16.,H(p.xz-vec2(0,8))-H(p.xz+vec2(0,8))));float light=floor((dot(n,sun)*.5+.5)*4.)/4.;if(h<0.){col=mix(vec3(.48,.89,.80),vec3(.10,.31,.54),smoothstep(2.,50.,-h));float fres=pow(1.-abs(d.y),4.);col=mix(col,sky(reflect(d,vec3(0,1,0))),fres*.24);float w=sin(p.x*.13+time*2.)*sin(p.z*.18-time);if(h>-7.&&w>.25)col=vec3(.74,.86,.78);float glint=pow(max(dot(reflect(-sun,vec3(0,1,0)),-d),0.),70.);vec2 wave=p.xz+vec2(time*7.,time*3.);vec2 g=wave/12.;float flash=hash(floor(g));vec2 speck=(fract(g)-.5)*vec2(1.,2.7);if(flash>.63&&dot(speck,speck)<.033)col=mix(col,vec3(.84,.95,.95),.62+glint*.25);}
+else{float biome=.47+.22*sin(p.x*.008+sin(p.z*.018))+.19*sin(p.z*.013+p.x*.005)+.12*hash(floor(p.xz/6.));col=vec3(.79,.69,.36);if(h<9.)col=vec3(1.,.90,.65);else if(h<360.&&biome>.27){col=biome>.8?vec3(.14,.33,.24):biome>.6?vec3(.77,.29,.15):biome>.4?vec3(.99,.57,.18):vec3(.87,.68,.26);}if(h>420.||n.y<.65)col=vec3(.46,.43,.51);if(h>680.)col=vec3(.89,.85,.81);float shadow=1.;for(int j=1;j<5;j++){float k=float(j)*100.;if(H(p.xz+sun.xz*k)>p.y+sun.y*k+8.)shadow=.56;}col=mix(col*mix(vec3(.74,.63,.86),vec3(1.22,1.12,.96),light),vec3(.68,.56,.69),(1.-shadow)*.40);float cloud=sin(p.x*.0012+time*.008)*sin(p.z*.0014);if(cloud>.45)col*=.78;float js=length(p.xz-jet.xz);if(js<16.)col*=.45;}
+float fog=1.-exp(-t*.00017);col=mix(col,sky(vec3(d.x,.025,d.z)),fog);}
+// Puffy banks: ray intersections with clustered ellipsoids.
+vec3 cloudRay=vec3(d.x,d.y,d.z);
+float cloudT=1e6;bool insideCloud=false;vec3 cloudColor=vec3(0.);
+float entry=max(0.,min((300.-eye.y)/(d.y+1e-6),(610.-eye.y)/(d.y+1e-6)));
+float exitT=min(t,max((300.-eye.y)/(d.y+1e-6),(610.-eye.y)/(d.y+1e-6)));
+if(exitT>entry){
+for(int j=0;j<7;j++){
+float probe=mix(entry,exitT,float(j)/6.);
+vec2 cell=floor((eye.xz+d.xz*probe)/520.);
+for(int k=0;k<4;k++){
+vec2 seed=cell+vec2(float(k)*17.,float(k)*31.);
+if(hash(cell)<.27)continue;
+vec3 center=vec3((cell.x+.22+hash(seed)*.56)*520.,360.+hash(seed+9.)*150.,(cell.y+.22+hash(seed+4.)*.56)*520.);
+vec3 radius=vec3(90.+hash(seed+5.)*105.,48.+hash(seed+8.)*60.,95.+hash(seed+6.)*100.);
+vec3 o=(eye-center)/radius,r=cloudRay/radius;
+insideCloud=insideCloud||dot(o,o)<1.;float rr=dot(r,r), bb=dot(o,r), disc=bb*bb-rr*(dot(o,o)-1.);
+if(disc>0.){float root=sqrt(disc),ct=(-bb-root)/rr;if(ct<0.)ct=(-bb+root)/rr;if(ct>0.&&ct<min(t,cloudT)){
+cloudT=ct;vec3 normal=normalize((o+r*ct)/radius);
+float shade=floor(clamp(.67+.40*dot(normal,normalize(vec3(.55,.63,.6))),0.,1.)*12.)/12.;
+cloudColor=mix(vec3(.79,.53,.61),vec3(1.,.97,.88),shade);}
+}
+}
+}
+}
+if(insideCloud)col=mix(col,vec3(.96,.86,.84),.26);
+else if(cloudT<1e5){
+float distanceFade=smoothstep(35.,340.,cloudT);
+vec3 litCloud=mix(cloudColor,sky(vec3(d.x,.04,d.z)),1.-exp(-cloudT*.00015));
+col=mix(col,litCloud,mix(.24,.92,distanceFade));
+}
+int b[16]=int[16](0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5);ivec2 q=ivec2(gl_FragCoord.xy)%4;float dith=(float(b[q.y*4+q.x])/16.-.5)/42.;color=vec4(clamp(col+dith*.18,0.,1.),1.);}`;
+function shader(type,src){let s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}let prog=gl.createProgram();gl.attachShader(prog,shader(gl.VERTEX_SHADER,vs));gl.attachShader(prog,shader(gl.FRAGMENT_SHADER,fs));gl.linkProgram(prog);if(!gl.getProgramParameter(prog,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(prog));gl.useProgram(prog);let buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,-1,1,1,-1,1,1]),gl.STATIC_DRAW);let loc=gl.getAttribLocation(prog,'p');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);const uniforms={};for(let k of ['eye','forward','right','up','aspect','time','jet'])uniforms[k]=gl.getUniformLocation(prog,k);
+let map,N=512,ready=false,started=false,view=1,targetView=1,transition=1,oldCam,cam,clock=0,mouse={x:0,y:0,moved:false,held:false,down:0},plane={x:300,y:320,z:400,yaw:1.12,pitch:0,bank:0,speed:125,roll:0},missiles=[],effects=[],trails=[],slots=[0,0,0,0],boost=false,sound=false,audio,osc,gain,frameMS=16,res=340;
+const workerCode=`onmessage=()=>{const n=512,a=new Float32Array(n*n);for(let y=0;y<n;y++){for(let x=0;x<n;x++){let u=x/n*Math.PI*2,v=y/n*Math.PI*2;let coast=.50*Math.cos(u*2+Math.sin(v)*.9)+.35*Math.sin(v*2-u)+.20*Math.sin(u*4+v*3)+.09*Math.cos(u*11-v*8)+.045*Math.sin(u*23+v*17);let ridge=Math.max(0,coast-.32);let meters=coast*139-8+ridge*ridge*770*(.68+.32*Math.sin(u*7-v*9));let h=(meters+230)/1100;a[y*n+x]=h;}if(y%32===0)postMessage({progress:y/n*100});}postMessage({map:a},[a.buffer]);}`;let worker=new Worker(URL.createObjectURL(new Blob([workerCode],{type:'text/javascript'})));worker.onmessage=e=>{if(e.data.progress!==undefined)$('progress').value=e.data.progress;if(e.data.map){map=e.data.map;let tex=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tex);gl.texImage2D(gl.TEXTURE_2D,0,gl.R32F,N,N,0,gl.RED,gl.FLOAT,map);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.REPEAT);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.REPEAT);ready=true;$('progress').value=100;$('start').disabled=false;$('start').textContent='TAKE FLIGHT';worker.terminate();}};worker.onerror=e=>showStartupError('Terrain generation failed: '+e.message);worker.postMessage(0);
+function height(x,z){let ix=((Math.floor(x/8192*N)%N)+N)%N,iz=((Math.floor(z/8192*N)%N)+N)%N;return Math.max(0,map[iz*N+ix]*1100-230)}
+const add=(a,b)=>a.map((v,i)=>v+b[i]),sub=(a,b)=>a.map((v,i)=>v-b[i]),mul=(a,s)=>a.map(v=>v*s),dot=(a,b)=>a.reduce((s,v,i)=>s+v*b[i],0),norm=a=>mul(a,1/Math.hypot(...a)),cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]],mix=(a,b,t)=>a.map((v,i)=>v+(b[i]-v)*t);function direction(a=plane){return [Math.sin(a.yaw)*Math.cos(a.pitch),Math.sin(a.pitch),Math.cos(a.yaw)*Math.cos(a.pitch)]}function makeCam(v){let p=[plane.x,plane.y,plane.z],f=direction(),pos,look;if(v===0){pos=add(p,[0,150,0]);look=[0,-1,0];}else if(v===1){let horizontal=[Math.sin(plane.yaw),0,Math.cos(plane.yaw)];pos=add(add(p,mul(horizontal,-96)),[0,32,0]);look=norm(sub(add(p,mul(f,32)),pos));}else{pos=airframePoint([0,2.3,5]);look=f;}let r=v===0?[1,0,0]:norm(cross([0,1,0],look)),u=cross(look,r);if(v!==0){let b=v===2?plane.bank+plane.roll:plane.bank*.12;let rr=add(mul(r,Math.cos(b)),mul(u,Math.sin(b)));u=add(mul(u,Math.cos(b)),mul(r,-Math.sin(b)));r=rr;}return {pos,f:look,r,u}}function cycle(){oldCam=cam;targetView=(targetView+1)%3;transition=0}function project(p){let rel=sub(p,cam.pos),depth=dot(rel,cam.f);if(depth<1)return null;return [c.width/2+dot(rel,cam.r)/depth*c.height/.72/2,c.height/2-dot(rel,cam.u)/depth*c.height/.72/2,depth]}
+function fire(){if(!started||frozen)return;let slot=slots.findIndex(s=>s<=clock);if(slot<0)return;slots[slot]=clock+5;let p=[plane.x,plane.y,plane.z],d=direction(),target=lockTarget&&lockProgress>=1&&lockTarget.alive?lockTarget:null;if(!target&&d[1]>-.13)d=norm([d[0],-.25,d[2]]);missiles.push({p:add(p,[slot%2?2:-2,-2,0]),d,life:0,enemy:false,target,speed:360});beep(120,.16)}
+function roll(){if(!started||frozen||plane.roll!==0)return;rollSign=Math.abs(plane.bank)>.035?Math.sign(plane.bank):(mouse.x>0?-1:1);plane.roll=rollSign*.001;rollDodged=false;if(clock>=rollRefillAt&&flareCharges<3){flareCharges++;rollRefillAt=clock+6;notice='FLARE REPLENISHED';noticeUntil=clock+2;}}
+function beep(freq,duration){if(!sound)return;let o=audio.createOscillator(),g=audio.createGain();o.frequency.value=freq;o.type='sawtooth';g.gain.setValueAtTime(.035,audio.currentTime);g.gain.exponentialRampToValueAtTime(.001,audio.currentTime+duration);o.connect(g).connect(audio.destination);o.start();o.stop(audio.currentTime+duration)}
+$('start').onclick=startRound;$('sound').onclick=()=>{if(!audio){audio=new AudioContext();osc=audio.createOscillator();gain=audio.createGain();osc.type='sawtooth';osc.connect(gain).connect(audio.destination);osc.start()}sound=!sound;audio.resume();gain.gain.value=sound?.018:0;$('sound').textContent=sound?'SOUND ON':'SOUND OFF'};addEventListener('keydown',e=>{if(e.code==='Space'){e.preventDefault();cycle()}if(e.code==='KeyG')gunKey=true;if(e.code==='KeyF'&&!e.repeat)fire();if(e.code==='KeyC'&&!e.repeat)deployFlares()});addEventListener('keyup',e=>{if(e.code==='KeyG')gunKey=false});addEventListener('contextmenu',e=>e.preventDefault());addEventListener('pointermove',e=>{if(e.target.tagName==='BUTTON')return;mouse.x=e.clientX/innerWidth*2-1;mouse.y=e.clientY/innerHeight*2-1;mouse.moved=true});addEventListener('pointerdown',e=>{if(e.target.tagName==='BUTTON')return;if(e.button===2)fire();else{mouse.held=true;mouse.down=performance.now()}});addEventListener('pointerup',e=>{if(e.button===0){if(mouse.held&&performance.now()-mouse.down<210)roll();mouse.held=false}});addEventListener('blur',()=>{mouse.held=false;boost=false;gunKey=gunTouch=false});$('view').onclick=cycle;$('roll').onclick=roll;$('fire').onclick=fire;
+$('gun').onpointerdown=e=>{e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);gunTouch=true;};
+$('gun').onpointerup=$('gun').onpointercancel=$('gun').onlostpointercapture=()=>{gunTouch=false;};
+$('flares').onclick=deployFlares;$('boost').onpointerdown=e=>{e.preventDefault();boost=true};$('boost').onpointerup=$('boost').onpointercancel=()=>boost=false;
+function poly(points,fill,stroke='#1b2435'){ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(...p):ctx.moveTo(...p));ctx.closePath();ctx.fillStyle=fill;ctx.fill();if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.lineJoin='round';ctx.stroke()}}// F-22 inspired low-poly airframe. All vertices share the flight/camera world space.
+function airframePoint(v,actor=plane){let f=direction(actor),r=[Math.cos(actor.yaw),0,-Math.sin(actor.yaw)],u=cross(f,r),a=actor.bank+actor.roll;let rr=add(mul(r,Math.cos(a)),mul(u,Math.sin(a))),uu=add(mul(u,Math.cos(a)),mul(r,-Math.sin(a)));return add([actor.x,targetView===0?plane.y:actor.y,actor.z],add(add(mul(rr,v[0]),mul(uu,v[1])),mul(f,v[2])))}
+function jetDraw(actor=plane){if(actor===plane&&targetView===2&&transition>.75)return;const faces=[];
+function face(vertices,color){let world=vertices.map(v=>airframePoint(v,actor)),screen=world.map(project);if(screen.some(v=>!v))return;let n=norm(cross(sub(world[1],world[0]),sub(world[2],world[0]))),light=.79+.21*Math.abs(dot(n,norm([.6,.5,.8])));let frost=actor===plane?ice*(.54+.34*Math.abs(n[1])):0;let rgb=color.map((v,i)=>Math.round(v*light*(actor===plane?1:i===0?1.08:i===2?.8:.88)*(1-frost)+[209,239,255][i]*frost));faces.push({points:screen.map(v=>v.slice(0,2)),z:screen.reduce((a,v)=>a+v[2],0)/screen.length,color:'rgb('+rgb.join(',')+')'})}
+const pale=[221,226,232],mid=[169,179,194],dark=[65,79,107],edge=[119,137,160];
+// Faceted fuselage, wide engine shoulders, long pointed radome.
+face([[-2,-.7,-9],[2,-.7,-9],[2.4,-.5,3],[0,0,15],[-2.4,-.5,3]],dark);
+face([[0,.1,15],[-1.6,.65,7],[0,1.3,6],[1.6,.65,7]],pale);
+face([[-1.6,.65,7],[-3.4,1,-6],[0,1.6,-9],[0,1.3,6]],mid);
+face([[1.6,.65,7],[0,1.3,6],[0,1.6,-9],[3.4,1,-6]],pale);
+face([[-3.4,1,-6],[-3.2,-.7,-10],[0,-.7,-10],[0,1.6,-9]],edge);
+face([[0,1.6,-9],[0,-.7,-10],[3.2,-.7,-10],[3.4,1,-6]],dark);
+for(let side of [-1,1]){let v=pts=>pts.map(([x,y,z])=>[x*side,y,z]);
+// Trapezoidal diamond wings and separate all-moving tailplanes.
+face(v([[2.1,.4,6],[9.75,.1,-1.7],[9.5,.1,-4.6],[8.4,.15,-5.2],[3,.6,-6]]),pale);
+face(v([[2.7,.47,3.4],[8.8,.22,-2.2],[8.5,.21,-4.3],[4.3,.56,-5],[3,.65,-4]]),mid);
+face(v([[2.8,.5,-5.7],[6,.3,-8],[5.2,.3,-10.5],[2.4,.7,-9]]),mid);
+// Canted vertical stabilizers, grey tips as on an F-22.
+face(v([[2.5,.9,-5],[4.2,5,-7.1],[4.1,4.7,-9.6],[2.8,.7,-9.7]]),edge);
+face(v([[2.5,.9,-5],[4.2,5,-7.1],[3.2,2,-8.3]]),pale);
+// Side intakes and rectangular thrust-vectoring nozzles.
+face(v([[1.8,.4,5],[3.2,.1,3],[3,-.8,1],[1.9,-.6,2]]),dark);
+face(v([[.4,.4,-10],[2.8,.4,-10],[2.8,-.7,-10],[.4,-.7,-10]]),[29,37,48]);
+face(v([[.7,.15,-10.1],[2.5,.15,-10.1],[2.5,-.45,-10.1],[.7,-.45,-10.1]]),isBoost?[255,229,167]:[216,132,75]);
+let length=(isBoost?9:2.5)+Math.sin(clock*47)*.6;
+face(v([[.8,.1,-10.2],[2.4,.1,-10.2],[1.6,-.1,-10.2-length]]),[255,168,89]);
+if(isBoost)face(v([[1.2,.08,-10.25],[2,.08,-10.25],[1.6,0,-15]]),[255,244,201]);}
+// Gold bubble canopy: three visible facets.
+face([[-.85,1.3,4.6],[0,2.25,3.6],[0,1.95,7],[0,.8,8.5]], [52,92,116]);
+face([[0,2.25,3.6],[.85,1.3,4.6],[0,.8,8.5],[0,1.95,7]], [246,198,109]);
+faces.sort((a,b)=>b.z-a.z);for(let f of faces)poly(f.points,f.color,'#273344');}
+let isBoost=false;function text(t,x,y,color='#c1d7b6',size=7){ctx.fillStyle=color;ctx.font=size+'px monospace';ctx.fillText(t,Math.round(x),Math.round(y))}function gauge(x,y,r,label,value,min,max){ctx.fillStyle='#111e27';ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();ctx.strokeStyle='#69787a';ctx.stroke();for(let i=0;i<9;i++){let a=-2.4+i*.6;ctx.strokeStyle='#a3b3a4';ctx.beginPath();ctx.moveTo(x+Math.sin(a)*(r-3),y-Math.cos(a)*(r-3));ctx.lineTo(x+Math.sin(a)*(r-6),y-Math.cos(a)*(r-6));ctx.stroke()}let a=-2.4+Math.min(1,Math.max(0,(value-min)/(max-min)))*4.8;ctx.strokeStyle='#f7ce8d';ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+Math.sin(a)*(r-7),y-Math.cos(a)*(r-7));ctx.stroke();text(label,x-r+5,y+r-5,'#a5b5af',6);text(Math.round(value),x-9,y+9,'#e0d6ac',7)}
+function cockpit(){let w=c.width,h=c.height,y=h*.61;poly([[0,h],[0,y+12],[w*.18,y-12],[w*.36,y],[w*.64,y],[w*.82,y-12],[w,y+12],[w,h]],'#203744');ctx.fillStyle='#2c4753';ctx.fillRect(w*.15,y+8,w*.7,h-y);ctx.strokeStyle='#71817d';ctx.strokeRect(w*.15,y+8,w*.7,h-y);for(let i=0;i<230;i++){let x=w*.15+(i*61%233)/233*w*.7,yy=y+9+(i*97%211)/211*(h-y-10);ctx.fillStyle='#49616b';ctx.fillRect(x,yy,1,1);}let r=Math.min(27,w/17,h*.076),cy=y+(h-y)*.34;gauge(w*.23,cy,r,'KNOTS',plane.speed*1.94,0,420);gauge(w*.42,cy,r,'ALT FT',plane.y*3.28,0,3500);gauge(w*.57,cy,r,'V/S',Math.sin(plane.pitch)*plane.speed*197,-3000,3000);gauge(w*.76,cy,r,'RPM',isBoost?100:76,0,110);let ax=w*.33;ctx.save();ctx.beginPath();ctx.arc(ax,cy,r,0,7);ctx.clip();ctx.translate(ax,cy);ctx.rotate(plane.bank);ctx.fillStyle='#677d87';ctx.fillRect(-r,-r*3,r*2,r*3+plane.pitch*60);ctx.fillStyle='#9a7255';ctx.fillRect(-r,plane.pitch*60,r*2,r*3);ctx.strokeStyle='#f9ddb1';ctx.beginPath();ctx.moveTo(-r,plane.pitch*60);ctx.lineTo(r,plane.pitch*60);ctx.stroke();ctx.restore();text('ATT',ax-7,cy+r-4);let rx=w*.66;ctx.fillStyle='#182723';ctx.beginPath();ctx.arc(rx,cy,r,0,7);ctx.fill();ctx.save();ctx.beginPath();ctx.arc(rx,cy,r-2,0,7);ctx.clip();for(let a=-r;a<r;a+=4)for(let b=-r;b<r;b+=4){let h0=height(plane.x+a*20,plane.z+b*20);ctx.fillStyle=h0>120?'#8e7838':'#344136';ctx.fillRect(rx+a,cy+b,2,2)}ctx.strokeStyle='#f3c46a';ctx.beginPath();ctx.moveTo(rx,cy);ctx.lineTo(rx+Math.sin(clock*2)*r,cy+Math.cos(clock*2)*r);ctx.stroke();for(let e of enemies){if(!e.alive)continue;let dx=(e.x-plane.x)/1300*r,dz=(e.z-plane.z)/1300*r;if(Math.hypot(dx,dz)<r){ctx.fillStyle=e===lockTarget?'#fff1ac':'#f28164';ctx.fillRect(rx+dx-1,cy-dz-1,3,3)}}ctx.restore();text('MAP',rx-9,cy+r-4);let lower=cy+r*2.08;if(lower+r<h-10){gauge(w*.32,lower,r*.78,'HDG',((plane.yaw*180/Math.PI)%360+360)%360,0,360);gauge(w*.51,lower,r*.78,'BANK',plane.bank*57.3,-60,60);gauge(w*.70,lower,r*.78,'RAD ALT',plane.y-height(plane.x,plane.z),0,800);}let hx=w*.5,hy=y-12;poly([[hx-43,hy],[hx-49,hy-50],[hx-34,hy-79],[hx+34,hy-79],[hx+49,hy-50],[hx+43,hy]],'rgba(87,176,151,.09)','#789a94');
+poly([[hx-51,y+14],[hx-43,y-9],[hx+43,y-9],[hx+51,y+14]],'#243442','#536473');ctx.fillStyle='#102824';ctx.fillRect(hx-33,y-2,66,14);text('NAV   •   FLIGHT',hx-29,y+8,'#9be8ae',6);
+text(new Date().toLocaleTimeString('en-GB'),w*.45,h-9,'#f0c881');ctx.fillStyle=isBoost?'#eab76d':'#7b847b';ctx.fillRect(w*.1,y+22-(isBoost?9:0),7,13);text('THR',w*.09,h-9);}
+function hud(){let w=c.width,h=c.height;if(targetView===2){let horizon=project(add(cam.pos,[Math.sin(plane.yaw)*10000,0,Math.cos(plane.yaw)*10000]));ctx.save();ctx.translate(w/2,horizon?horizon[1]:h/2);ctx.rotate(plane.bank+plane.roll);ctx.strokeStyle='#bfdca4';for(let i=-3;i<=3;i++){let y=i*23;ctx.beginPath();ctx.moveTo(-43,y);ctx.lineTo(-14,y);ctx.moveTo(14,y);ctx.lineTo(43,y);ctx.stroke();text(-i*10,46,y+2)}ctx.restore();cockpit()}ctx.strokeStyle='#b7d8a1';let cx=w/2,cy=h*.44;ctx.beginPath();ctx.moveTo(cx-6,cy);ctx.lineTo(cx-2,cy);ctx.moveTo(cx+2,cy);ctx.lineTo(cx+6,cy);ctx.moveTo(cx,cy-4);ctx.lineTo(cx,cy+3);ctx.stroke();let heading=((plane.yaw*180/Math.PI)%360+360)%360;text(String(Math.round(heading)).padStart(3,'0')+'°',cx-12,29);text(Math.round(plane.speed*1.94)+' KT',w*.18,h*.45);text(Math.round(plane.y*3.28)+' FT',w*.76,h*.45);let agl=plane.y-height(plane.x,plane.z);text('RALT '+Math.round(agl*3.28),w*.76,h*.45+12);text((1+Math.abs(plane.bank)*1.8).toFixed(1)+' G',w*.18,h*.45+12);text(['NORTH UP','F-22 CHASE','F-22 COCKPIT'][targetView],w-65,h-28,'#ffdfad',7)}
+function tick(dt){if(wrecked)return;clock+=dt;
+if(frozen){
+  const clearance=plane.y-height(plane.x,plane.z);
+  const tumble=Math.max(0,Math.min(1,(clearance-125)/360));
+  const fallTime=clock-frozenAt;
+  plane.yaw+=dt*(.9+Math.sin(fallTime*3)*.35)*tumble;
+  plane.bank+=(Math.sin(fallTime*4)*1.32*tumble-plane.bank)*Math.min(1,dt*4);
+  plane.pitch+=(.10-.79*tumble-plane.pitch)*Math.min(1,dt*4);
+  const f=direction();
+  plane.x+=f[0]*plane.speed*dt*.6;
+  plane.z+=f[2]*plane.speed*dt*.6;
+  plane.y-=(40+155*tumble)*dt;
+  ice=Math.min(1,Math.max(0,clearance/900));
+  if(plane.y<=height(plane.x,plane.z)+125){
+    frozen=false;
+    recovering=1;
+    notice='FLIGHT CONTROL RESTORED';noticeUntil=clock+2;
+    alarm='';
+  }else{
+    alarm='SYSTEMS FROZEN';
+    if(clock-lastAlarm>.52){beep(530,.16);lastAlarm=clock;}
+  }
+  combatTick(dt);
+  return;
+}
+ice=Math.max(0,ice-dt*.18);
+const authority=1-recovering;recovering=Math.max(0,recovering-dt*.65);
+isBoost=authority>.5&&(boost||(mouse.held&&performance.now()-mouse.down>210));plane.speed+=( (isBoost?220:125)-plane.speed)*dt*1.8;let turn=mouse.moved?mouse.x:Math.sin(clock*.28)*.3;let pitch=mouse.moved?-mouse.y*.47:Math.sin(clock*.21)*.045;if(targetView===0&&mouse.moved){let desired=Math.atan2(mouse.x,-mouse.y),err=Math.atan2(Math.sin(desired-plane.yaw),Math.cos(desired-plane.yaw));turn=Math.max(-1,Math.min(1,err*1.7));pitch=0}turn*=authority;pitch=.10*(1-authority)+pitch*authority;plane.yaw+=turn*dt*(.72+.48*Math.abs(turn));plane.bank+=(-turn*.8-plane.bank)*Math.min(1,dt*3);let f=direction(),ahead=height(plane.x+f[0]*plane.speed*1.6,plane.z+f[2]*plane.speed*1.6);plane.pitch+=(pitch-plane.pitch)*Math.min(1,dt*2);if(plane.roll!==0){plane.roll+=rollSign*dt*5.5;if(Math.abs(plane.roll)>Math.PI*2)plane.roll=0}f=direction();plane.x+=f[0]*plane.speed*dt;plane.y+=f[1]*plane.speed*dt;plane.z+=f[2]*plane.speed*dt;const clearance=plane.y-height(plane.x,plane.z);
+if(clearance<=2){endRound('TERRAIN IMPACT');return;}
+if(plane.y>=freezeLimit){
+  hull=Math.max(1,hull-50);
+  frozen=true;frozenAt=clock;ice=1;isBoost=false;plane.roll=0;alarm='SYSTEMS FROZEN';
+  if(audio)gain.gain.value=sound?.013:0;
+  beep(530,.23);lastAlarm=clock;
+  return;
+}
+alarm=clearance<60||(plane.pitch<0&&plane.y+Math.sin(plane.pitch)*plane.speed*1.6<ahead+35)?'PULL UP':plane.y>=freezeWarning?'ICING — DESCEND':hull<=20?'HULL CRITICAL':'';
+if(alarm&&clock-lastAlarm>.52){beep(alarm==='PULL UP'?850:alarm==='ICING — DESCEND'?530:315,.16);lastAlarm=clock;}
+if(audio){osc.frequency.value=35+plane.speed*.3;gain.gain.value=sound?(isBoost?.028:.013):0}trails.push({tips:[airframePoint([-9.25,.1,-4]),airframePoint([9.25,.1,-4])],life:3.8});for(let a of trails)a.life-=dt;trails=trails.filter(a=>a.life>0);combatTick(dt);for(let e of effects)e.age+=dt;effects=effects.filter(e=>e.age<(e.type==='trail'?1.5:7));}
+function draw(){let w=c.width,h=c.height;ctx.clearRect(0,0,w,h);ctx.imageSmoothingEnabled=false;for(let j=1;j<trails.length;j++){let a=trails[j],b=trails[j-1];for(let side=0;side<2;side++){let p=project(a.tips[side]),q=project(b.tips[side]);if(!p||!q)continue;ctx.strokeStyle='rgba(255,244,224,'+Math.min(.98,a.life*.70)+')';ctx.lineWidth=.9;ctx.beginPath();ctx.moveTo(p[0],p[1]);ctx.lineTo(q[0],q[1]);ctx.stroke();}}for(let e of effects){let p=project(e.p);if(!p)continue;let s=Math.min(2,160/p[2]);if(e.type==='trail'){let puff=Math.max(.8,s*(2+e.age*4));ctx.fillStyle='rgba(250,230,216,'+(1-e.age/1.5)*.77+')';ctx.beginPath();ctx.arc(p[0],p[1],puff,0,7);ctx.fill();continue}let r=Math.max(2,(12+e.age*15)*s);ctx.strokeStyle=e.type==='water'?'#d2eee4':'#edb87a';ctx.beginPath();ctx.ellipse(p[0],p[1],Math.min(55,r*2),Math.min(15,r*.5),0,0,7);ctx.stroke();ctx.fillStyle=e.type==='water'?'#cfebe3':e.age<.4?'#fff1b1':e.age<1.3?'#ef8747':'#47455499';ctx.beginPath();ctx.arc(p[0],p[1]-e.age*6*s,r*(e.age<1?1:.6),0,7);ctx.fill()}for(let e of enemies)if(e.alive)jetDraw(e);if(!wrecked)jetDraw();drawProjectiles();hud();drawPickup();combatDraw();drawRoundHud();$('count').textContent=' · '+slots.filter(s=>s<=clock).length+'/4 MSL · FLARES '+flareCharges+'/3 · KILLS '+kills;}
+
+// Small arcade dogfight: real proximity, lock timers, limited-turn seekers and countermeasures.
+let enemies=[],lockTarget=null,lockProgress=0,flareCharges=3,flareReload=0,flareParticles=[],rollSign=1,rollDodged=false,rollRefillAt=0,kills=0,hull=100,invulnerableUntil=0,hitFlash=0,notice='',noticeUntil=0,combatStarted=false;
+const initialPlane={...plane};
+const freezeWarning=1000, freezeLimit=1300;
+let pickup=null,nextPickup=0;
+let frozen=false,frozenAt=0,ice=0,recovering=0;
+let gunKey=false,gunTouch=false,gunHeat=0,gunJammed=false,gunNext=0,gunTracers=[],missileDanger=false;
+let wrecked=false,wave=1,nextWave=0,roundStart=0,lastAlarm=-Infinity,alarm='';
+function startRound(){
+  Object.assign(plane,initialPlane);
+  pickup=null;nextPickup=clock+8+Math.random()*5;
+  gunKey=gunTouch=gunJammed=missileDanger=false;gunHeat=0;gunNext=clock;gunTracers=[];
+  Object.assign(mouse,{x:0,y:0,moved:false,held:false});
+  enemies=[];missiles=[];effects=[];trails=[];flareParticles=[];slots.fill(0);
+  lockTarget=null;lockProgress=0;flareCharges=3;flareReload=0;rollRefillAt=0;rollDodged=false;
+  kills=0;hull=100;invulnerableUntil=0;hitFlash=0;noticeUntil=0;boost=false;isBoost=false;
+  wrecked=false;frozen=false;ice=0;recovering=0;combatStarted=false;wave=1;nextWave=0;alarm='';lastAlarm=-Infinity;
+  roundStart=clock;started=true;$('cover').style.display='none';
+}
+function score(){return kills*100+(wave-1)*250;}
+function endRound(reason){
+  if(wrecked)return;
+  wrecked=true;started=false;hull=0;alarm='';boost=false;mouse.held=false;
+  explosion(pos(plane));beep(74,.55);if(audio)gain.gain.value=0;
+  $('cover').querySelector('h1').textContent=reason;
+  $('cover').querySelector('p').textContent='SCORE '+score()+' · WAVE '+wave+' · KILLS '+kills+' · '+Math.floor(clock-roundStart)+'s';
+  $('cover').querySelector('small').textContent='';
+  $('progress').style.display='none';
+  $('start').textContent='FLY AGAIN';
+  $('cover').style.display='grid';
+}
+function beginWave(){
+  const count=Math.min(12,wave+2);
+  enemies=Array.from({length:count},(_,i)=>spawnEnemy(i));
+  notice='WAVE '+wave+' — '+count+' BANDITS';noticeUntil=clock+3;
+}
+
+function pos(a){return [a.x,a.y,a.z]}
+function distance(a,b){return Math.hypot(...sub(a,b))}
+function segmentDistance(p,a,b){let ab=sub(b,a),t=Math.max(0,Math.min(1,dot(sub(p,a),ab)/Math.max(.001,dot(ab,ab))));return distance(p,add(a,mul(ab,t)))}
+function spawnEnemy(i){let a=plane.yaw+((i%5)-2)*.34,range=350+(i%4)*130+Math.floor(i/5)*230,x=plane.x+Math.sin(a)*range,z=plane.z+Math.cos(a)*range;return {id:i,x,y:Math.max(plane.y+40+i*20,height(x,z)+130),z,yaw:a+Math.PI,pitch:0,bank:0,roll:0,speed:Math.min(205,100+i*4+(wave-1)*9),alive:true,hp:100,respawnAt:0,lock:0,nextShot:clock+6+i*3};}
+function deployFlares(){if(!started||frozen||flareCharges<1)return;flareCharges--;for(let i=0;i<8;i++){let side=i%2?1:-1,p=airframePoint([side*3,-1,-8]);flareParticles.push({p,v:[Math.cos(plane.yaw)*side*(25+i*3),-3+Math.random()*13,-Math.sin(plane.yaw)*side*(25+i*3)],age:0});}notice='COUNTERMEASURES';noticeUntil=clock+2;beep(720,.12)}
+function explosion(p,type='air'){effects.push({p:[...p],age:0,type});}
+function damageBandit(enemy,damage){
+  enemy.hp=Math.max(0,enemy.hp-damage);
+  if(enemy.hp>0){notice='VULCAN HIT';noticeUntil=clock+.35;return;}
+  enemy.alive=false;enemy.lock=0;kills++;
+  explosion(pos(enemy));notice='TARGET DESTROYED';noticeUntil=clock+2;
+  if(lockTarget===enemy){lockTarget=null;lockProgress=0;}
+}
+function updateVulcan(dt){
+  gunTracers=gunTracers.filter(tracer=>tracer.until>clock);
+  const firing=!frozen&&(gunKey||gunTouch)&&!gunJammed;
+  if(!firing){
+    gunHeat=Math.max(0,gunHeat-dt*.25);
+    if(gunHeat<=.24)gunJammed=false;
+    return;
+  }
+  if(clock<gunNext)return;
+  gunNext=clock+.085;
+  gunHeat=Math.min(1,gunHeat+.054);
+  gunJammed=gunHeat>=1;
+  const topDown=targetView===0;
+  const origin=airframePoint([1.3,.2,5]);
+  const heading=topDown?[Math.sin(plane.yaw),0,Math.cos(plane.yaw)]:direction();
+  let nearest=560,hit=null;
+  for(const enemy of enemies){
+    if(!enemy.alive)continue;
+    const target=pos(enemy);
+    if(topDown)target[1]=origin[1];
+    const offset=sub(target,origin),depth=dot(offset,heading);
+    if(depth<=0||depth>=nearest)continue;
+    if(distance(target,add(origin,mul(heading,depth)))>12+depth*.032)continue;
+    hit=enemy;nearest=depth;
+  }
+  const end=hit?pos(hit):add(origin,mul(heading,nearest));
+  if(topDown)end[1]=origin[1];
+  gunTracers.push({origin,end,start:clock,until:clock+.24});
+  if(hit)damageBandit(hit,20);
+  beep(155,.045);
+}
+function drawProjectiles(){
+  for(const m of missiles){
+    const p=project(m.p);
+    if(!p)continue;
+    const tail=project(sub(m.p,mul(m.d,25)));
+    ctx.fillStyle=m.enemy?'#ff6457':'#ffc77a';
+    ctx.strokeStyle=ctx.fillStyle;ctx.lineWidth=2.1;
+    if(tail){ctx.beginPath();ctx.moveTo(tail[0],tail[1]);ctx.lineTo(p[0],p[1]);ctx.stroke();}
+    ctx.fillRect(p[0]-2.5,p[1]-2.5,5,5);
+    ctx.fillStyle='#fff8e5';ctx.fillRect(p[0]-1,p[1]-1,2,2);
+  }
+  for(const tracer of gunTracers){
+    const progress=Math.min(1,(clock-tracer.start)/.24);
+    const head=project(mix(tracer.origin,tracer.end,Math.min(1,progress+.16)));
+    const tail=project(mix(tracer.origin,tracer.end,Math.max(progress-.085,.025)));
+    if(!head||!tail)continue;
+    ctx.strokeStyle='rgba(255,175,62,.40)';ctx.lineWidth=1.55;
+    ctx.beginPath();ctx.moveTo(tail[0],tail[1]);ctx.lineTo(head[0],head[1]);ctx.stroke();
+    ctx.strokeStyle='#fff0ae';ctx.lineWidth=.85;ctx.stroke();
+    ctx.fillStyle='#fff4bc';ctx.fillRect(head[0]-.6,head[1]-.6,1.2,1.2);
+  }
+  ctx.lineWidth=1;
+}
+const pickupTypes=[
+  {label:'REPAIR +50',color:'#8af4aa',icon:'+',apply(){hull=Math.min(100,hull+50);}},
+  {label:'MISSILES REARMED',color:'#ffd180',icon:'M',apply(){slots.fill(clock);}},
+  {label:'FLARES RESTOCKED',color:'#efb5ff',icon:'F',apply(){flareCharges=3;flareReload=0;}}
+];
+function updatePickup(){
+  if(pickup&&clock>=pickup.expires)pickup=null;
+  if(!pickup&&clock>=nextPickup){
+    const angle=plane.yaw+(Math.random()-.5)*1.1;
+    const range=180+Math.random()*230;
+    const x=plane.x+Math.sin(angle)*range;
+    const z=plane.z+Math.cos(angle)*range;
+    const y=Math.max(height(x,z)+65,Math.min(freezeWarning-80,plane.y+(Math.random()-.5)*65));
+    const type=pickupTypes[Math.floor(Math.random()*pickupTypes.length)];
+    pickup={p:[x,y,z],type,expires:clock+20};
+    nextPickup=clock+23+Math.random()*10;
+  }
+  if(!pickup||frozen)return;
+  const range=targetView===0?Math.hypot(pickup.p[0]-plane.x,pickup.p[2]-plane.z):distance(pickup.p,pos(plane));
+  if(range<38){
+    pickup.type.apply();
+    notice=pickup.type.label;noticeUntil=clock+2.5;
+    beep(760,.18);pickup=null;
+  }
+}
+function drawPickup(){
+  if(!started||!pickup)return;
+  const {p,type}=pickup;
+  const topDown=targetView===0;
+  const screen=project(topDown?[p[0],plane.y,p[2]]:p);
+  const range=Math.round(topDown?Math.hypot(p[0]-plane.x,p[2]-plane.z):distance(p,pos(plane)));
+  if(!screen||screen[0]<18||screen[0]>c.width-18||screen[1]<28||screen[1]>c.height-28){
+    const rel=sub(p,cam.pos);
+    const side=dot(rel,cam.r);
+    const x=side<0?12:c.width-90;
+    text((side<0?'‹ ':'› ')+type.icon+' '+range+' M',x,c.height*.36,type.color,7);
+    return;
+  }
+  const [x,y]=screen;
+  const r=7+Math.sin(clock*4)*1.2;
+  poly([[x,y-r],[x+r,y],[x,y+r],[x-r,y]],'#122738',type.color);
+  text(type.icon,x-2,y+2,type.color,7);
+  text(range+' M',x+10,y+2,type.color,7);
+}
+function combatTick(dt){if(!combatStarted){beginWave();combatStarted=true;}
+if(enemies.every(e=>!e.alive)){
+  if(!nextWave){nextWave=clock+3;notice='WAVE CLEARED';noticeUntil=nextWave;}
+  if(clock>=nextWave){wave++;nextWave=0;beginWave();}
+}
+hitFlash=Math.max(0,hitFlash-dt);if(flareCharges<3){flareReload+=dt;if(flareReload>=18){flareCharges++;flareReload=0;}}else flareReload=0;
+for(let f of flareParticles){f.age+=dt;f.v[1]-=dt*7;f.p=add(f.p,mul(f.v,dt));}flareParticles=flareParticles.filter(f=>f.age<4);
+updateVulcan(dt);
+updatePickup();
+let pp=pos(plane),best=null,bestScore=-1;
+for(let e of enemies){if(!e.alive)continue;
+let delta=sub(pp,pos(e)),range=Math.hypot(...delta);if(range>2400){Object.assign(e,spawnEnemy(e.id));delta=sub(pp,pos(e));range=Math.hypot(...delta);}
+// Aim ahead during attack; weave and extend when too close.
+let goal=range<200?e.yaw+.85*dt:Math.atan2(delta[0],delta[2])+Math.sin(clock*.37+e.id)*.28;
+let err=Math.atan2(Math.sin(goal-e.yaw),Math.cos(goal-e.yaw));let turn=Math.max(-.65,Math.min(.65,err*1.3));e.yaw+=turn*dt;e.bank+=(-turn-e.bank)*dt*3;let targetHeight=Math.max(plane.y+Math.sin(clock*.3+e.id)*75,height(e.x+Math.sin(e.yaw)*180,e.z+Math.cos(e.yaw)*180)+110);e.pitch+=(Math.max(-.35,Math.min(.4,(targetHeight-e.y)*.004))-e.pitch)*dt;let ed=direction(e);e.x+=ed[0]*e.speed*dt;e.y+=ed[1]*e.speed*dt;e.z+=ed[2]*e.speed*dt;e.y=Math.max(e.y,height(e.x,e.z)+50);
+delta=sub(pp,pos(e));range=Math.hypot(...delta);let enemyCone=dot(norm(delta),direction(e));if(range<1100&&enemyCone>.7&&clock>invulnerableUntil)e.lock=Math.min(3,e.lock+dt);else e.lock=Math.max(0,e.lock-dt*2);
+if(e.lock>=Math.max(.85,2.5-(wave-1)*.23)&&clock>=e.nextShot){missiles.push({p:pos(e),d:direction(e),life:0,enemy:true,speed:Math.min(385,245+(wave-1)*16),target:plane});e.nextShot=clock+Math.max(3,10-(wave-1)*.65)+e.id*.35;e.lock=0;beep(360,.15);}
+let rel=sub(pos(e),pp),cone=dot(norm(rel),direction());if(range<1300&&cone>(targetView===0?-.15:.45)){let score=cone*2+1-range/1300;if(e===lockTarget)score+=.25;if(score>bestScore){best=e;bestScore=score;}}
+}
+if(best!==lockTarget){lockTarget=best;lockProgress=0;}if(lockTarget){let before=lockProgress;lockProgress=Math.min(1,lockProgress+dt/0.85);if(before<1&&lockProgress>=1)beep(920,.1);}else lockProgress=0;
+if(plane.roll!==0&&!rollDodged&&Math.abs(plane.roll)>1.5){let dodged=false;for(let m of missiles)if(m.enemy&&m.target===plane&&distance(m.p,pp)<230){m.target=null;m.evaded=true;dodged=true;}if(dodged){rollDodged=true;notice='MISSILE EVADED';noticeUntil=clock+2;}}
+for(let m of missiles){m.life+=dt;let old=[...m.p];if(m.target&&m.target.alive===false)m.target=null;
+if(m.enemy&&!m.decoy&&!m.evaded){let decoy=flareParticles.find(f=>f.age<2.8&&distance(f.p,m.p)<550);if(decoy){m.decoy=decoy;m.target=null;}}
+let target=m.decoy?m.decoy.p:m.target?pos(m.target):null;
+if(target&&distance(target,m.p)>.001){let desired=norm(sub(target,m.p));m.d=norm(mix(m.d,desired,Math.min(.12,dt*(m.enemy?1.8:3.4))));}
+m.p=add(m.p,mul(m.d,dt*m.speed));if(Math.floor(m.life*22)!==Math.floor((m.life-dt)*22))effects.push({p:[...m.p],age:0,type:'trail'});
+if(m.decoy&&segmentDistance(m.decoy.p,old,m.p)<13){explosion(m.p);m.life=99;continue;}
+if(m.enemy){if(segmentDistance(pp,old,m.p)<13){if(clock>invulnerableUntil){hull=Math.max(0,hull-20);hitFlash=.65;invulnerableUntil=clock+2;notice='HIT — HULL '+hull+'%';noticeUntil=clock+3;if(hull<=0){endRound('JET DESTROYED');return;}}explosion(m.p);m.life=99;}}
+else {for(let e of enemies)if(e.alive&&segmentDistance(pos(e),old,m.p)<18){damageBandit(e,100);m.life=99;break;}}
+if(m.life<90&&(m.p[1]<height(m.p[0],m.p[2])+2||m.life>11)){explosion([m.p[0],height(m.p[0],m.p[2])+5,m.p[2]],height(m.p[0],m.p[2])<1?'water':'blast');m.life=99;}}
+missiles=missiles.filter(m=>m.life<12);
+missileDanger=missiles.some(m=>{
+  if(!m.enemy||m.decoy||m.evaded||m.target!==plane)return false;
+  const relativeVelocity=sub(mul(m.d,m.speed),mul(direction(),plane.speed));
+  const offset=sub(pp,m.p), closing=dot(offset,relativeVelocity);
+  return closing>0&&distance(m.p,pp)<Math.max(120,Math.hypot(...relativeVelocity)*1.15);
+});if(effects.length>750)effects.splice(0,effects.length-750);
+}
+function combatDraw(){let w=c.width,h=c.height,pp=pos(plane);for(let e of enemies){if(!e.alive)continue;let p=project(targetView===0?[e.x,plane.y,e.z]:pos(e)),isLock=e===lockTarget&&lockProgress>=1;let rel=sub(pos(e),cam.pos),depth=dot(rel,cam.f),sx=dot(rel,cam.r),sy=-dot(rel,cam.u);let visible=p&&p[0]>12&&p[0]<w-12&&p[1]>45&&p[1]<h-75;let x,y;if(visible){x=p[0];y=p[1];ctx.strokeStyle=isLock?'#ffe693':'#ec8a79';let r=isLock?11:8;ctx.strokeRect(x-r,y-r,r*2,r*2);text((isLock?'LOCK ':'BANDIT ')+Math.round(distance(pos(e),pp))+' M',x+13,y-3,isLock?'#ffe693':'#ffab91',6);if(e===lockTarget&&!isLock){ctx.fillStyle='#efb27d';ctx.fillRect(x-8,y+12,16*lockProgress,2);}}else{let vx=sx,vy=sy;if(depth<0){vx=sx;vy=Math.abs(sy)+100;}let len=Math.max(1,Math.hypot(vx,vy));vx/=len;vy/=len;let t=Math.min((w/2-18)/Math.max(.01,Math.abs(vx)),(h/2-65)/Math.max(.01,Math.abs(vy)));x=w/2+vx*t;y=h/2+vy*t;poly([[x+vx*5,y+vy*5],[x-vx*3-vy*3,y-vy*3+vx*3],[x-vx*3+vy*3,y-vy*3-vx*3]],isLock?'#ffe693':'#dc7c6a',null);}}
+for(let f of flareParticles){let p=project(f.p);if(!p)continue;ctx.fillStyle=f.age<1?'#fff5c8':'#f5b66a';let r=f.age<1?2:1;ctx.fillRect(p[0]-r,p[1]-r,r*2,r*2);}
+let incoming=missiles.filter(m=>m.enemy&&m.target===plane&&!m.decoy),locking=enemies.some(e=>e.alive&&e.lock>.5);if(incoming.length||locking){text(incoming.length?'MISSILE INBOUND — C / ROLL':'ENEMY RADAR LOCK',w/2-82,49,Math.sin(clock*12)>0?'#ff8372':'#ffdfad',8);}
+if(lockTarget)text(lockProgress>=1?'TARGET LOCKED — FIRE':'ACQUIRING '+Math.round(lockProgress*100)+'%',w/2-55,h*.65,'#ffe09d',7);
+text('HULL '+hull+'%  FLARES '+flareCharges+'/3'+(flareCharges<3?'  '+Math.ceil(18-flareReload)+'s':''),12,h-43,'#e8d2ac',7);if(clock<noticeUntil)text(notice,w/2-notice.length*2,h*.7,'#ffdb9e',7);if(hitFlash>0){ctx.fillStyle='rgba(230,67,48,'+hitFlash*.35+')';ctx.fillRect(0,0,w,h);}
+}
+function drawRoundHud(){
+  if(!started)return;
+  const w=c.width,h=c.height,x=12,y=h-62,bar=82;
+  ctx.fillStyle='#18222dda';ctx.fillRect(x-4,y-13,bar+8,24);
+  text('HULL '+hull+'%',x,y-4,hull<=20?'#ff7770':'#fff0cf',7);
+  ctx.fillStyle='#493540';ctx.fillRect(x,y,bar,5);
+  ctx.fillStyle=hull<=20?'#ff5b50':hull<=40?'#ffc173':'#8fdbbb';
+  ctx.fillRect(x,y,bar*hull/100,5);
+  text('WAVE '+wave+'   SCORE '+score(),12,48,'#fff0cf',7);
+  text(gunJammed?'VULCAN COOLING':'VULCAN '+Math.round(gunHeat*100)+'%',x,y-21,gunJammed?'#ff7866':'#ffe1a1',7);
+  ctx.fillStyle='#493540';ctx.fillRect(x,y-18,bar,3);
+  ctx.fillStyle=gunJammed?'#ff5b50':'#ffc173';ctx.fillRect(x,y-18,bar*gunHeat,3);
+  const warning=missileDanger?'MISSILE IMMINENT':alarm;
+  if(!warning)return;
+  const pulse=Math.sin(clock*12)>0;
+  ctx.strokeStyle=pulse?'#ff4b4b':'#a8263a';ctx.lineWidth=pulse?3:1;
+  ctx.strokeRect(2,2,w-4,h-4);ctx.lineWidth=1;
+  const width=warning.length*5+16;
+  ctx.fillStyle='#34151de5';ctx.fillRect((w-width)/2,54,width,14);
+  text(warning,(w-width)/2+8,64,pulse?'#ff6a63':'#ffd3bc',8);
+}
+let previous=0,slow=0;function frame(t){requestAnimationFrame(frame);if(!ready)return;let dt=Math.min(.04,(t-previous)/1000||.016);frameMS=frameMS*.98+(t-previous)*.02;previous=t;if(started)tick(dt);else{clock+=dt;if(wrecked){for(const effect of effects)effect.age+=dt;effects=effects.filter(effect=>effect.age<2);}}transition=Math.min(1,transition+dt);let next=makeCam(targetView);if(oldCam&&transition<1){let a=transition*transition*(3-2*transition);cam={pos:mix(oldCam.pos,next.pos,a),f:norm(mix(oldCam.f,next.f,a)),r:norm(mix(oldCam.r,next.r,a)),u:norm(mix(oldCam.u,next.u,a))}}else cam=next;slow+=dt;if(slow>4){if(frameMS>25&&res>220)res-=30;slow=0}let hh=Math.round(res),ww=Math.round(hh*innerWidth/innerHeight);if(c.height!==hh||c.width!==ww){c.width=ww;c.height=hh;$('world').width=ww;$('world').height=hh;gl.viewport(0,0,ww,hh)}gl.useProgram(prog);for(let [k,v] of Object.entries({eye:cam.pos,forward:cam.f,right:cam.r,up:cam.u,jet:[plane.x,plane.y,plane.z]}))gl.uniform3fv(uniforms[k],v);gl.uniform1f(uniforms.aspect,ww/hh);gl.uniform1f(uniforms.time,clock);gl.drawArrays(gl.TRIANGLES,0,6);draw()}requestAnimationFrame(frame);
+window.patrolTest={step:(seconds)=>{for(let i=0;i<seconds*60;i++){mouse.x=Math.sin(i*.01);mouse.y=Math.sin(i*.007)*.6;mouse.moved=true;tick(1/60);if(i%130===0)fire()}return {plane,missiles:missiles.length,effects:effects.length}},view:n=>{targetView=n;transition=1},fire,state:()=>({plane,ready,started,view:targetView})};
+</script></html>
